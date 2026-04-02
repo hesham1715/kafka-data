@@ -1,0 +1,29 @@
+{
+  "name": "data-for-logs",
+  "version": "2.0.0",
+  "description": "Structured HTTP request/response snapshots for logging (NestJS, Express, raw Node http)",
+  "keywords": [
+    "logs-data",
+    "nestjs",
+    "express",
+    "http",
+    "request",
+    "logging"
+  ],
+  "homepage": "https://github.com/hesham1715/kafka-data#readme",
+  "bugs": {
+    "url": "https://github.com/hesham1715/kafka-data/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hesham1715/kafka-data.git"
+  },
+  "license": "ISC",
+  "author": "hesham",
+  "type": "commonjs",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
