@@ -1,5 +1,57 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 
+// ─── Transport interface ──────────────────────────────────────────────────────
+
+/**
+ * The contract every transport must implement.
+ * `send` is the only required method; `connect` and `disconnect` are optional
+ * lifecycle hooks (called automatically by built-in transports).
+ */
+export interface Transport {
+  /** Publish a log payload to the underlying system. */
+  send(payload: HttpLogPayload): Promise<void>;
+  /** Optional: open/establish the connection. */
+  connect?(): Promise<void>;
+  /** Optional: gracefully close the connection. */
+  disconnect?(): Promise<void>;
+}
+
+// ─── Kafka transport ─────────────────────────────────────────────────────────
+
+export interface KafkaTransportConfig {
+  /** List of broker addresses, e.g. ['localhost:9092'] */
+  brokers: string[];
+  /** Kafka topic to publish log payloads to. */
+  topic: string;
+  /** Kafka client id (default: 'http-log-transport') */
+  clientId?: string;
+  /** kafkajs SSL options */
+  ssl?: object;
+  /** kafkajs SASL options */
+  sasl?: object;
+  /** Extra kafkajs producer options */
+  producerConfig?: object;
+  /** Custom serializer function. Default: JSON.stringify */
+  serialize?: (payload: HttpLogPayload) => string;
+  /** Static Kafka message key */
+  messageKey?: string;
+  /** Dynamic key function — takes precedence over messageKey */
+  getKey?: (payload: HttpLogPayload) => string;
+}
+
+/**
+ * Creates a Kafka transport.
+ * Requires `kafkajs` to be installed: npm install kafkajs
+ *
+ * @example
+ * const transport = createKafkaTransport({
+ *   brokers: ['localhost:9092'],
+ *   topic: 'http-logs',
+ * });
+ * app.use(createMiddleware(transport, { includeBody: true }));
+ */
+export declare function createKafkaTransport(config: KafkaTransportConfig): Transport;
+
 export interface LogOptions {
   redactSensitiveHeaders?: boolean;
   /** Extra body keys (case-insensitive) to redact; merged with built-in secrets list */
@@ -119,19 +171,32 @@ export declare function onResponseComplete(
 /**
  * Returns a ready-made Express/Nest middleware `(req, res, next) => void`.
  *
- * **Nest `AppModule` example:**
- * ```ts
- * consumer
- *   .apply(createMiddleware((err, payload) => this.logger.log(payload), { includeBody: true }))
- *   .forRoutes('*');
- * ```
+ * Accepts three forms:
  *
- * **`main.ts` global example:**
+ * **1. Callback handler (original API):**
  * ```ts
  * app.use(createMiddleware((err, payload) => logger.log(payload)));
  * ```
+ *
+ * **2. A single transport:**
+ * ```ts
+ * const transport = createKafkaTransport({ brokers: ['localhost:9092'], topic: 'http-logs' });
+ * app.use(createMiddleware(transport, { includeBody: true }));
+ * ```
+ *
+ * **3. Multiple transports (fan-out):**
+ * ```ts
+ * app.use(createMiddleware([kafkaTransport, webhookTransport], { includeBody: true }));
+ * ```
+ *
+ * **Nest `AppModule` example:**
+ * ```ts
+ * consumer
+ *   .apply(createMiddleware(transport, { includeBody: true }))
+ *   .forRoutes('*');
+ * ```
  */
 export declare function createMiddleware(
-  handler: OnCompleteHandler,
+  transportOrHandler: OnCompleteHandler | Transport | Transport[],
   options?: OnResponseCompleteOptions,
 ): (req: IncomingMessage, res: ServerResponse, next: () => void) => void;

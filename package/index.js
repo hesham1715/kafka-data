@@ -326,21 +326,64 @@ function onResponseComplete(req, res, handler, options = {}) {
 /**
  * Returns a ready-made Express/Nest middleware function `(req, res, next) => void`.
  *
- * Usage in Nest AppModule:
- *   consumer.apply(createMiddleware((err, payload) => logger.log(payload))).forRoutes('*');
+ * Accepts one of three forms for the first argument:
  *
- * Usage in main.ts:
- *   app.use(createMiddleware((err, payload) => logger.log(payload), { includeBody: true }));
+ * 1. Callback handler (original API — backward-compatible):
+ *      createMiddleware((err, payload) => logger.log(payload), options)
+ *
+ * 2. A single transport object  { send(payload): Promise<void>, ... }:
+ *      createMiddleware(kafkaTransport, options)
+ *
+ * 3. An array of transport objects (fan-out to all):
+ *      createMiddleware([kafkaTransport, webhookTransport], options)
  */
-function createMiddleware(handler, options = {}) {
-  if (typeof handler !== 'function') {
-    throw new TypeError('createMiddleware: handler must be a function');
+function createMiddleware(transportOrHandler, options = {}) {
+  const { onHandlerError } = options;
+
+  // ── Form 1: plain callback (original API) ──────────────────────────────────
+  if (typeof transportOrHandler === 'function') {
+    return function httpLogMiddleware(req, res, next) {
+      onResponseComplete(req, res, transportOrHandler, options);
+      if (typeof next === 'function') next();
+    };
   }
+
+  // ── Forms 2 & 3: transport object or array of transports ───────────────────
+  const transports = Array.isArray(transportOrHandler)
+    ? transportOrHandler
+    : [transportOrHandler];
+
+  if (transports.length === 0) {
+    throw new TypeError('createMiddleware: transports array must not be empty');
+  }
+
+  for (const t of transports) {
+    if (!t || typeof t.send !== 'function') {
+      throw new TypeError(
+        'createMiddleware: each transport must be an object with a send(payload) method',
+      );
+    }
+  }
+
+  function handler(_err, payload) {
+    for (const transport of transports) {
+      Promise.resolve(transport.send(payload)).catch((err) => {
+        if (typeof onHandlerError === 'function') {
+          onHandlerError(err);
+        } else {
+          console.error('[http-log] transport error:', err);
+        }
+      });
+    }
+  }
+
   return function httpLogMiddleware(req, res, next) {
     onResponseComplete(req, res, handler, options);
     if (typeof next === 'function') next();
   };
 }
+
+const { createKafkaTransport } = require('./transports/kafka');
 
 module.exports = {
   getRequestSnapshot,
@@ -351,4 +394,6 @@ module.exports = {
   sanitizeBody,
   DEFAULT_OPTIONS,
   SENSITIVE_HEADER_NAMES,
+  // transports
+  createKafkaTransport,
 };
