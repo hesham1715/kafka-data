@@ -4,6 +4,7 @@ const {
   createKafkaTransport,
   getRequestSnapshot,
   getResponseSnapshot,
+  parseUserAgent,
 } = require('../package');
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -25,6 +26,8 @@ function log(label, value) {
 //  MODE 2 — Kafka transport        (requires a running Kafka broker)
 //  MODE 3 — custom transport       (example: a plain console logger transport)
 //  MODE 4 — multiple transports    (fan-out to Kafka + console at the same time)
+//  MODE 5 — custom-shaped payload  (transform callback → Kafka)
+//  MODE 6 — built-in flat shape      (outputFormat: 'flat', no transform)
 //
 const MODE = process.env.MODE || '1';
 
@@ -138,6 +141,113 @@ function buildFanOutMiddleware() {
   });
 }
 
+// ─── MODE 5: custom-shaped payload ───────────────────────────────────────────
+//
+//  Uses:
+//    • captureResponseBody: true  → attaches response body to payload.response.body
+//    • transform: (payload) => …  → reshapes to YOUR exact data structure
+//    • parseUserAgent             → device / browser from User-Agent header
+//
+//  The Kafka message value will be exactly the shape you defined.
+
+function buildShapedMiddleware() {
+  section('MODE 5 — custom-shaped payload → Kafka');
+
+  const transport = createKafkaTransport({
+    brokers:  (process.env.KAFKA_BROKERS  || 'localhost:9092').split(','),
+    clientId: process.env.KAFKA_CLIENT_ID || 'my-app',
+    topic:    process.env.KAFKA_TOPIC     || 'http-logs',
+
+    // Kafka message key = the API route (groups messages by endpoint)
+    getKey: (shaped) => shaped.apiRoute || 'unknown',
+  });
+
+  return createMiddleware(transport, {
+    includeBody:         true,
+    captureResponseBody: true,
+    highResTime:         () => performance.now(),
+    onHandlerError:      (err) => console.error('[Kafka error]', err.message),
+
+    // ── userId resolution ─────────────────────────────────────────────────
+    // priority: this function → req.user.id → null
+    // (omit this option entirely to fall back to req.user.id automatically)
+    getUserId: (req) => req.user?.id ?? null,
+
+    // ── userRole resolution ───────────────────────────────────────────────
+    // priority: this function → req.user.role → null
+    getUserRole: (req) => req.user?.role ?? null,
+
+    // ── reshape HttpLogPayload into your final data structure ─────────────
+    //
+    // Header key renames:
+    //   x-app-name    → appName
+    //   x-app-version → appVersion
+    //   x-build-number→ buildNumber
+    //   x-platform    → platform  (the OS: android, ios, windows…)
+    //
+    transform(payload, { userId, userRole }) {
+      const req     = payload.request;
+      const resp    = payload.response;
+      const headers = req.headers || {};
+      const ua      = parseUserAgent(req.userAgent);
+
+      return {
+        requestId:          req.requestId || null,
+
+        // ── renamed header fields ─────────────────────────────────────────
+        appName:     headers['x-app-name']     || null,
+        appVersion:  headers['x-app-version']  || null,
+        buildNumber: headers['x-build-number'] || null,
+
+        // platform = x-platform header (android / ios / windows);
+        // fall back to OS parsed from User-Agent
+        platform:    headers['x-platform'] || ua.os || null,
+
+        apiRoute:           req.url,
+        apiMethod:          req.method,
+        userIp:             req.forwardedFor || req.realIp || req.remoteAddress,
+
+        requestBody:        req.body  || null,
+        responseBody:       resp.body || null,
+
+        service:            process.env.SERVICE_NAME || 'APTS',
+
+        responseStatus:     resp.statusMessage    || null,
+        responseStatusCode: resp.statusCode,
+        responseTime:       Math.round(payload.durationMs),
+
+        // ── user context (resolved by getUserId / getUserRole options) ─────
+        userId,
+        userRole,
+
+        userDevice:  ua.device,
+        userBrowser: ua.browser,
+      };
+    },
+  });
+}
+
+// ─── MODE 6: built-in flat payload (no transform in consumer) ───────────────
+
+function buildBuiltinFlatMiddleware() {
+  section('MODE 6 — built-in flat payload (outputFormat: flat)');
+
+  const transport = createKafkaTransport({
+    brokers:  (process.env.KAFKA_BROKERS  || 'localhost:9092').split(','),
+    clientId: process.env.KAFKA_CLIENT_ID || 'my-app',
+    topic:    process.env.KAFKA_TOPIC     || 'http-logs',
+    getKey:   (shaped) => shaped.apiRoute || 'unknown',
+  });
+
+  return createMiddleware(transport, {
+    includeBody:         true,
+    captureResponseBody: true,
+    outputFormat:        'flat',
+    highResTime:         () => performance.now(),
+    onHandlerError:      (err) => console.error('[Kafka error]', err.message),
+  });
+}
+
 // ─── wire up the selected middleware ─────────────────────────────────────────
 
 const middlewareBuilders = {
@@ -145,10 +255,12 @@ const middlewareBuilders = {
   '2': buildKafkaMiddleware,
   '3': buildCustomMiddleware,
   '4': buildFanOutMiddleware,
+  '5': buildShapedMiddleware,
+  '6': buildBuiltinFlatMiddleware,
 };
 
 if (!middlewareBuilders[MODE]) {
-  console.error(`Unknown MODE="${MODE}". Use 1, 2, 3, or 4.`);
+  console.error(`Unknown MODE="${MODE}". Use 1, 2, 3, 4, 5, or 6.`);
   process.exit(1);
 }
 

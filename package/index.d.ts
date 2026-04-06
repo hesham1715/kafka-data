@@ -9,7 +9,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
  */
 export interface Transport {
   /** Publish a log payload to the underlying system. */
-  send(payload: HttpLogPayload): Promise<void>;
+  send(payload: unknown): Promise<void>;
   /** Optional: open/establish the connection. */
   connect?(): Promise<void>;
   /** Optional: gracefully close the connection. */
@@ -32,11 +32,11 @@ export interface KafkaTransportConfig {
   /** Extra kafkajs producer options */
   producerConfig?: object;
   /** Custom serializer function. Default: JSON.stringify */
-  serialize?: (payload: HttpLogPayload) => string;
+  serialize?: (payload: unknown) => string;
   /** Static Kafka message key */
   messageKey?: string;
   /** Dynamic key function — takes precedence over messageKey */
-  getKey?: (payload: HttpLogPayload) => string;
+  getKey?: (payload: unknown) => string;
 }
 
 /**
@@ -106,6 +106,8 @@ export interface HttpResponseSnapshot {
   headersSent?: boolean;
   finished?: boolean;
   writableEnded?: boolean;
+  /** Populated when `captureResponseBody: true` is set in options */
+  body?: unknown;
 }
 
 export interface HttpLogPayload {
@@ -117,15 +119,130 @@ export interface HttpLogPayload {
   response: HttpResponseSnapshot;
 }
 
+/**
+ * Default nested payload with `userId` and `userRole` merged at the top level
+ * when `transform` is omitted and `outputFormat` is `'nested'` (the default).
+ */
+export type HttpNestedLogPayload = HttpLogPayload & {
+  userId: unknown;
+  userRole: unknown;
+};
+
+/**
+ * Built-in flat log record when `outputFormat: 'flat'` and `transform` is omitted.
+ * Set `captureResponseBody: true` to populate `responseBody`.
+ */
+export interface HttpFlatLogPayload {
+  requestId: unknown;
+  appName: unknown;
+  appVersion: unknown;
+  buildNumber: unknown;
+  platform: unknown;
+  apiRoute: unknown;
+  apiMethod: unknown;
+  userIp: unknown;
+  requestBody: unknown;
+  responseBody: unknown;
+  service: unknown;
+  responseStatus: unknown;
+  responseStatusCode: unknown;
+  responseTime: number;
+  userId: unknown;
+  userRole: unknown;
+  userDevice: string;
+  userBrowser: string;
+}
+
 export type OnCompleteHandler = (
   err: null,
-  payload: HttpLogPayload,
+  payload: HttpLogPayload | HttpNestedLogPayload | HttpFlatLogPayload,
 ) => void;
+
+export interface UserAgentInfo {
+  device:  string;
+  browser: string;
+  os:      string;
+}
+
+/**
+ * Parses a User-Agent string into device, browser, and OS.
+ * Best-effort heuristics — replace with `ua-parser-js` for production accuracy.
+ */
+export declare function parseUserAgent(ua?: string): UserAgentInfo;
+
+/** Context passed as the second argument to the `transform` function. */
+export interface TransformContext {
+  /**
+   * Resolved user id.
+   * Source priority: `getUserId` option → `req.user.id` → `null`
+   */
+  userId: unknown;
+  /**
+   * Resolved user role.
+   * Source priority: `getUserRole` option → `req.user.role` → `null`
+   */
+  userRole: unknown;
+  /** The raw Node.js / Express `Request` object (has `req.user`, etc.) */
+  req: IncomingMessage & { user?: { id?: unknown; role?: unknown; [key: string]: unknown } };
+  /** The raw Node.js / Express `Response` object */
+  res: ServerResponse;
+}
 
 export interface OnResponseCompleteOptions extends LogOptions {
   /** Use `() => performance.now()` in Node for sub-ms timing */
   highResTime?: () => number;
   onHandlerError?: (err: unknown) => void;
+  /**
+   * When true, patches `res.write` / `res.end` to collect the response body
+   * and attach it as `response.body` in the payload.
+   */
+  captureResponseBody?: boolean;
+  /**
+   * Resolve the user id to include in the log.
+   *
+   * - Pass a **function** `(req) => req.user?.id` to derive it from the request.
+   * - Pass a **static value** to always use that value.
+   * - Omit entirely to fall back to `req.user?.id` automatically.
+   * - Falls back to `null` if nothing is found.
+   */
+  getUserId?: ((req: IncomingMessage & Record<string, any>) => unknown) | unknown;
+  /**
+   * Resolve the user role to include in the log.
+   *
+   * - Pass a **function** `(req) => req.user?.role` to derive it from the request.
+   * - Pass a **static value** to always use that value.
+   * - Omit entirely to fall back to `req.user?.role` automatically.
+   * - Falls back to `null` if nothing is found.
+   */
+  getUserRole?: ((req: IncomingMessage & Record<string, any>) => unknown) | unknown;
+  /**
+   * How to shape the payload before `transport.send()` when `transform` is omitted.
+   * - `'nested'` (default): `{ ...HttpLogPayload, userId, userRole }`
+   * - `'flat'`: built-in flat record (`HttpFlatLogPayload`) with app headers, route, bodies, timing, UA
+   */
+  outputFormat?: 'nested' | 'flat';
+  /**
+   * When `outputFormat` is `'flat'`, overrides `process.env.SERVICE_NAME` for the `service` field.
+   * Default: `process.env.SERVICE_NAME` or `'APTS'`.
+   */
+  serviceName?: string;
+  /**
+   * Transform the raw `HttpLogPayload` into any custom shape before it is
+   * passed to `transport.send()`.
+   *
+   * The second argument `context` provides the resolved `userId`, `userRole`,
+   * and the raw `req` / `res` objects for anything not in the snapshot.
+   *
+   * @example
+   * transform: (payload, { userId, userRole }) => ({
+   *   appName:     payload.request.headers['x-app-name'],
+   *   apiRoute:    payload.request.url,
+   *   responseTime: Math.round(payload.durationMs),
+   *   userId,
+   *   userRole,
+   * })
+   */
+  transform?: (payload: HttpLogPayload, context: TransformContext) => unknown;
 }
 
 export declare const DEFAULT_OPTIONS: Readonly<{

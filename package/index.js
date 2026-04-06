@@ -270,12 +270,175 @@ function getResponseSnapshot(res) {
     headersSent: res.headersSent,
     finished: res.finished,
     writableEnded: res.writableEnded,
+    // populated when captureResponseBody: true is used
+    ...(res._responseBody !== undefined && { body: res._responseBody }),
   };
+}
+
+/**
+ * Parses a User-Agent string into `{ device, browser, os }`.
+ *
+ * These are best-effort heuristics. For production-grade detection,
+ * replace with a library such as `ua-parser-js`.
+ *
+ * @param {string} [ua]
+ * @returns {{ device: string, browser: string, os: string }}
+ */
+function parseUserAgent(ua) {
+  if (!ua || typeof ua !== 'string') {
+    return { device: 'Unknown', browser: 'Unknown', os: 'Unknown' };
+  }
+
+  let device = 'Desktop';
+  if (/android/i.test(ua))          device = 'Android';
+  else if (/iphone/i.test(ua))      device = 'iPhone';
+  else if (/ipad/i.test(ua))        device = 'iPad';
+  else if (/mobile/i.test(ua))      device = 'Mobile';
+
+  let os = 'Unknown';
+  if (/android/i.test(ua))          os = 'Android';
+  else if (/iphone|ipad|ios/i.test(ua)) os = 'iOS';
+  else if (/windows nt/i.test(ua))  os = 'Windows';
+  else if (/mac os x/i.test(ua))    os = 'macOS';
+  else if (/linux/i.test(ua))       os = 'Linux';
+
+  let browser = 'Unknown';
+  if (/edg\//i.test(ua))            browser = 'Edge';
+  else if (/opr\//i.test(ua))       browser = 'Opera';
+  else if (/chrome/i.test(ua))      browser = 'Chrome';
+  else if (/firefox/i.test(ua))     browser = 'Firefox';
+  else if (/safari/i.test(ua))      browser = 'Safari';
+
+  return { device, browser, os };
+}
+
+/**
+ * Resolves userId / userRole from options and req.user.
+ * @param {import('http').IncomingMessage} req
+ * @param {object} [options]
+ */
+function resolveUserContext(req, options = {}) {
+  let userId = null;
+  if (typeof options.getUserId === 'function') {
+    userId = options.getUserId(req) ?? null;
+  } else if (options.getUserId !== undefined) {
+    userId = options.getUserId ?? null;
+  } else {
+    userId = req.user && req.user.id !== undefined ? req.user.id : null;
+  }
+
+  let userRole = null;
+  if (typeof options.getUserRole === 'function') {
+    userRole = options.getUserRole(req) ?? null;
+  } else if (options.getUserRole !== undefined) {
+    userRole = options.getUserRole ?? null;
+  } else {
+    userRole = req.user && req.user.role !== undefined ? req.user.role : null;
+  }
+
+  return { userId, userRole };
+}
+
+/**
+ * Built-in flat log shape (no consumer `transform` required).
+ * Use `outputFormat: 'flat'` in createMiddleware / onResponseComplete options.
+ *
+ * @param {object} payload - HttpLogPayload from onResponseComplete
+ * @param {{ userId: unknown, userRole: unknown }} ctx
+ * @param {object} [options] - middleware options (serviceName, etc.)
+ */
+function buildFlatLogPayload(payload, ctx, options = {}) {
+  const { userId, userRole } = ctx;
+  const req = payload.request;
+  const resp = payload.response;
+  const headers = req.headers || {};
+  const ua = parseUserAgent(req.userAgent);
+
+  const service =
+    (typeof options.serviceName === 'string' && options.serviceName) ||
+    (typeof process !== 'undefined' &&
+      process.env &&
+      typeof process.env.SERVICE_NAME === 'string' &&
+      process.env.SERVICE_NAME) ||
+    'APTS';
+
+  return {
+    requestId: req.requestId ?? null,
+    appName: headers['x-app-name'] ?? null,
+    appVersion: headers['x-app-version'] ?? null,
+    buildNumber: headers['x-build-number'] ?? null,
+    platform: headers['x-platform'] ?? ua.os ?? null,
+    apiRoute: req.url,
+    apiMethod: req.method,
+    userIp: req.forwardedFor || req.realIp || req.remoteAddress,
+    requestBody: req.body ?? null,
+    responseBody: resp.body ?? null,
+    service,
+    responseStatus: resp.statusMessage ?? null,
+    responseStatusCode: resp.statusCode,
+    responseTime: Math.round(payload.durationMs),
+    userId,
+    userRole,
+    userDevice: ua.device,
+    userBrowser: ua.browser,
+  };
+}
+
+/**
+ * Applies optional `transform`, or built-in `outputFormat`, or merges user context
+ * into the default nested payload.
+ *
+ * @param {object} payload
+ * @param {import('http').IncomingMessage} req
+ * @param {import('http').ServerResponse} res
+ * @param {object} [options]
+ */
+function finalizeLogPayload(payload, req, res, options = {}) {
+  const { userId, userRole } = resolveUserContext(req, options);
+  const context = { userId, userRole, req, res };
+
+  if (typeof options.transform === 'function') {
+    return options.transform(payload, context);
+  }
+
+  const outputFormat = options.outputFormat ?? 'nested';
+  if (outputFormat === 'flat') {
+    return buildFlatLogPayload(payload, { userId, userRole }, options);
+  }
+
+  return { ...payload, userId, userRole };
 }
 
 function onResponseComplete(req, res, handler, options = {}) {
   if (typeof handler !== 'function') {
     throw new TypeError('onResponseComplete: handler must be a function');
+  }
+
+  // ── optionally capture the response body ─────────────────────────────────
+  if (options.captureResponseBody) {
+    const chunks = [];
+    const originalWrite = res.write.bind(res);
+    const originalEnd   = res.end.bind(res);
+
+    res.write = function capturedWrite(chunk, ...args) {
+      if (chunk != null) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+      }
+      return originalWrite(chunk, ...args);
+    };
+
+    res.end = function capturedEnd(chunk, ...args) {
+      if (chunk != null) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+      }
+      const raw = Buffer.concat(chunks).toString('utf8');
+      try {
+        res._responseBody = raw ? JSON.parse(raw) : undefined;
+      } catch {
+        res._responseBody = raw || undefined;
+      }
+      return originalEnd(chunk, ...args);
+    };
   }
 
   const startWall = Date.now();
@@ -343,7 +506,21 @@ function createMiddleware(transportOrHandler, options = {}) {
   // ── Form 1: plain callback (original API) ──────────────────────────────────
   if (typeof transportOrHandler === 'function') {
     return function httpLogMiddleware(req, res, next) {
-      onResponseComplete(req, res, transportOrHandler, options);
+      function wrappedHandler(err, payload) {
+        let finalized;
+        try {
+          finalized = finalizeLogPayload(payload, req, res, options);
+        } catch (finalizeErr) {
+          if (typeof onHandlerError === 'function') {
+            onHandlerError(finalizeErr);
+          } else {
+            console.error('[http-log] finalize error:', finalizeErr);
+          }
+          return;
+        }
+        transportOrHandler(err, finalized);
+      }
+      onResponseComplete(req, res, wrappedHandler, options);
       if (typeof next === 'function') next();
     };
   }
@@ -365,19 +542,32 @@ function createMiddleware(transportOrHandler, options = {}) {
     }
   }
 
-  function handler(_err, payload) {
-    for (const transport of transports) {
-      Promise.resolve(transport.send(payload)).catch((err) => {
+  return function httpLogMiddleware(req, res, next) {
+    // ── handler is created per-request so it can close over req/res ──────────
+    function handler(_err, payload) {
+      let finalPayload;
+      try {
+        finalPayload = finalizeLogPayload(payload, req, res, options);
+      } catch (err) {
         if (typeof onHandlerError === 'function') {
           onHandlerError(err);
         } else {
-          console.error('[http-log] transport error:', err);
+          console.error('[http-log] finalize error:', err);
         }
-      });
-    }
-  }
+        return;
+      }
 
-  return function httpLogMiddleware(req, res, next) {
+      for (const transport of transports) {
+        Promise.resolve(transport.send(finalPayload)).catch((err) => {
+          if (typeof onHandlerError === 'function') {
+            onHandlerError(err);
+          } else {
+            console.error('[http-log] transport error:', err);
+          }
+        });
+      }
+    }
+
     onResponseComplete(req, res, handler, options);
     if (typeof next === 'function') next();
   };
@@ -392,6 +582,7 @@ module.exports = {
   createMiddleware,
   pickHeaders,
   sanitizeBody,
+  parseUserAgent,
   DEFAULT_OPTIONS,
   SENSITIVE_HEADER_NAMES,
   // transports
