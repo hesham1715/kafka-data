@@ -1,6 +1,6 @@
 {
   "name": "data-for-logs",
-  "version": "4.0.2",
+  "version": "4.0.3",
   "description": "Structured HTTP request/response snapshots for logging (NestJS, Express, raw Node http)",
   "keywords": [
     "logs-data",
@@ -23,10 +23,29 @@
   "type": "commonjs",
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": "./index.js",
+    "./nestjs": {
+      "require": "./nestjs.js",
+      "types": "./nestjs.d.ts"
+    }
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
     "kafkajs": "^2.2.4"
+  },
+  "peerDependencies": {
+    "@nestjs/common": ">=8.0.0",
+    "@nestjs/core": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@nestjs/common": {
+      "optional": true
+    },
+    "@nestjs/core": {
+      "optional": true
+    }
   }
 }

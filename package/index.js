@@ -421,21 +421,6 @@ function onResponseComplete(req, res, handler, options = {}) {
 
   // ── optionally capture the response body ─────────────────────────────────
   if (options.captureResponseBody) {
-    const requestOverrideBytes =
-      req &&
-      req.logOptions &&
-      typeof req.logOptions === "object" &&
-      req.logOptions.maxResponseBodyBytes !== undefined
-        ? req.logOptions.maxResponseBodyBytes
-        : undefined;
-    const resolvedMaxResponseBodyBytes = Number(
-      requestOverrideBytes ??
-        options.maxResponseBodyBytes ??
-        DEFAULT_OPTIONS.maxResponseBodyBytes,
-    );
-    const shouldLimitResponseBody =
-      Number.isFinite(resolvedMaxResponseBodyBytes) &&
-      resolvedMaxResponseBodyBytes >= 0;
     const chunks = [];
     const originalWrite = res.write.bind(res);
     const originalEnd = res.end.bind(res);
@@ -456,6 +441,25 @@ function onResponseComplete(req, res, handler, options = {}) {
         );
       }
       const rawBuffer = Buffer.concat(chunks);
+
+      // Read req.logOptions lazily here so NestJS interceptors (which run after
+      // middleware but before res.end) can override the limit per-route.
+      const requestOverrideBytes =
+        req &&
+        req.logOptions &&
+        typeof req.logOptions === "object" &&
+        req.logOptions.maxResponseBodyBytes !== undefined
+          ? req.logOptions.maxResponseBodyBytes
+          : undefined;
+      const resolvedMaxResponseBodyBytes = Number(
+        requestOverrideBytes ??
+          options.maxResponseBodyBytes ??
+          DEFAULT_OPTIONS.maxResponseBodyBytes,
+      );
+      const shouldLimitResponseBody =
+        Number.isFinite(resolvedMaxResponseBodyBytes) &&
+        resolvedMaxResponseBodyBytes >= 0;
+
       if (
         shouldLimitResponseBody &&
         rawBuffer.length > resolvedMaxResponseBodyBytes
