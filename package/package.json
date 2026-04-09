@@ -1,6 +1,6 @@
 {
   "name": "data-for-logs",
-  "version": "4.0.0",
+  "version": "4.0.2",
   "description": "Structured HTTP request/response snapshots for logging (NestJS, Express, raw Node http)",
   "keywords": [
     "logs-data",
@@ -26,12 +26,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "peerDependencies": {
-    "kafkajs": ">=2.0.0"
-  },
-  "peerDependenciesMeta": {
-    "kafkajs": {
-      "optional": true
-    }
+  "dependencies": {
+    "kafkajs": "^2.2.4"
   }
 }

@@ -16,6 +16,9 @@
  * @param {function} [config.serialize]   - custom serializer; default: JSON.stringify
  * @param {string}   [config.messageKey]  - static Kafka message key; default: undefined
  * @param {function} [config.getKey]      - dynamic key fn `(payload) => string`
+ * @param {boolean}  [config.wrapPayload] - wrap message as { eventType, publishedAt, payload } (default: true)
+ * @param {string}   [config.eventType]   - envelope event type (default: topic)
+ * @param {function} [config.getPublishedAt] - fn `(payload) => ISO timestamp`
  *
  * @returns {{ connect, send, disconnect }}
  */
@@ -47,6 +50,9 @@ function createKafkaTransport(config) {
     serialize = JSON.stringify,
     messageKey,
     getKey,
+    wrapPayload = true,
+    eventType = topic,
+    getPublishedAt,
   } = config;
 
   const kafka = new Kafka({
@@ -73,16 +79,42 @@ function createKafkaTransport(config) {
   async function send(payload) {
     if (!connected) await connect();
 
+    const resolvedRequestId =
+      payload && typeof payload === 'object'
+        ? payload.requestId ??
+          (payload.request &&
+          typeof payload.request === 'object' &&
+          payload.request.requestId !== undefined
+            ? payload.request.requestId
+            : undefined)
+        : undefined;
+
     const key =
       typeof getKey === 'function'
         ? String(getKey(payload))
         : messageKey !== undefined
           ? String(messageKey)
-          : null;
+          : resolvedRequestId !== undefined && resolvedRequestId !== null
+            ? String(resolvedRequestId)
+            : null;
+
+    const outboundPayload = wrapPayload
+      ? {
+          eventType,
+          publishedAt:
+            (typeof getPublishedAt === 'function' && getPublishedAt(payload)) ||
+            (payload &&
+            typeof payload === 'object' &&
+            typeof payload.timestamp === 'string'
+              ? payload.timestamp
+              : new Date().toISOString()),
+          payload,
+        }
+      : payload;
 
     let value;
     try {
-      value = serialize(payload);
+      value = serialize(outboundPayload);
     } catch (err) {
       throw new Error('createKafkaTransport: failed to serialize payload — ' + err.message);
     }

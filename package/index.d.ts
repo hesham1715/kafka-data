@@ -35,8 +35,20 @@ export interface KafkaTransportConfig {
   serialize?: (payload: unknown) => string;
   /** Static Kafka message key */
   messageKey?: string;
-  /** Dynamic key function — takes precedence over messageKey */
+  /**
+   * Dynamic key function — takes precedence over messageKey.
+   * If omitted, transport falls back to payload requestId.
+   */
   getKey?: (payload: unknown) => string;
+  /** Wrap outbound message as `{ eventType, publishedAt, payload }`. Default: true */
+  wrapPayload?: boolean;
+  /** Envelope event type. Default: `topic` */
+  eventType?: string;
+  /**
+   * Compute envelope publish time. Receives original payload.
+   * Default: `payload.timestamp` (if present) or current time.
+   */
+  getPublishedAt?: (payload: unknown) => string;
 }
 
 /**
@@ -198,6 +210,16 @@ export interface OnResponseCompleteOptions extends LogOptions {
    */
   captureResponseBody?: boolean;
   /**
+   * Maximum response body size (in bytes) that can be captured when
+   * `captureResponseBody` is enabled. If exceeded, `response.body` is omitted.
+   * Default: 1 MB.
+   *
+   * Can be overridden per request by setting:
+   * `req.logOptions.maxResponseBodyBytes = <number>`
+   * (useful with Nest decorators/interceptors for route-specific limits).
+   */
+  maxResponseBodyBytes?: number;
+  /**
    * Resolve the user id to include in the log.
    *
    * - Pass a **function** `(req) => req.user?.id` to derive it from the request.
@@ -254,6 +276,7 @@ export declare const DEFAULT_OPTIONS: Readonly<{
   maxStringLength: number;
   includeBody: boolean;
   includeRawBody: boolean;
+  maxResponseBodyBytes: number;
 }>;
 
 export declare const SENSITIVE_HEADER_NAMES: ReadonlySet<string>;
