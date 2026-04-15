@@ -49,6 +49,51 @@ export interface KafkaTransportConfig {
    * Default: `payload.timestamp` (if present) or current time.
    */
   getPublishedAt?: (payload: unknown) => string;
+
+  // ── Partition / auto-scaling ─────────────────────────────────────────────
+
+  /**
+   * Static partition number. Overrides key-based (murmur2) routing.
+   * Takes effect only when `getPartition` is not provided.
+   */
+  partition?: number;
+  /**
+   * Dynamic partition function. Called with the final outbound payload and must
+   * return a partition index. Takes precedence over `partition`.
+   *
+   * @example
+   * // Route by HTTP method so each method lands on a dedicated partition
+   * getPartition: (payload) => {
+   *   const map: Record<string, number> = { GET: 0, POST: 1, PUT: 2, PATCH: 2, DELETE: 3 };
+   *   return map[(payload as any)?.payload?.apiMethod ?? 'GET'] ?? 0;
+   * }
+   */
+  getPartition?: (payload: unknown) => number;
+  /**
+   * When `true`, the transport creates the topic on first connect if it does
+   * not already exist, using `numPartitions` and `replicationFactor`.
+   * Default: `false`.
+   */
+  autoCreateTopic?: boolean;
+  /**
+   * Number of partitions to create when `autoCreateTopic` is `true`.
+   * Has no effect if the topic already exists.
+   * Default: `1`.
+   */
+  numPartitions?: number;
+  /**
+   * Replication factor to use when `autoCreateTopic` is `true`.
+   * Should be ≤ the number of brokers in your cluster.
+   * Default: `1`.
+   */
+  replicationFactor?: number;
+  /**
+   * How often (in milliseconds) the producer refreshes partition-count metadata
+   * from the broker. A lower value (e.g. `30_000`) lets the producer detect
+   * externally-added partitions faster; a higher value reduces broker load.
+   * Default: `300_000` (5 minutes).
+   */
+  metadataMaxAge?: number;
 }
 
 /**

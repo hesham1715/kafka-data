@@ -384,7 +384,7 @@ function buildFlatLogPayload(payload, ctx, options = {}) {
     responseTime: Math.round(payload.durationMs),
     userId,
     userRole,
-    userDevice: ua.device,
+    userDevice: headers["x-device-model"] || ua.device,
     userBrowser: ua.browser,
   };
 }
