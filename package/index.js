@@ -217,9 +217,9 @@ function getRequestSnapshot(req, options = {}) {
 
     requestId:
       headers["x-request-id"] ||
+      req.requestId ||
       headers["x-correlation-id"] ||
       headers["traceparent"] ||
-      req.requestId ||
       undefined,
 
     contentType: headers["content-type"],
