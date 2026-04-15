@@ -1,6 +1,6 @@
 {
   "name": "data-for-logs",
-  "version": "4.0.5",
+  "version": "4.0.6",
   "description": "Structured HTTP request/response snapshots for logging (NestJS, Express, raw Node http)",
   "keywords": [
     "logs-data",
