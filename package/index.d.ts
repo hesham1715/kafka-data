@@ -215,6 +215,18 @@ export type OnCompleteHandler = (
   payload: HttpLogPayload | HttpNestedLogPayload | HttpFlatLogPayload,
 ) => void;
 
+/**
+ * Attach custom fields to this request's log record (merged into `req.logFields`).
+ * Call anywhere before the response ends — middleware, guard, interceptor, controller.
+ *
+ * @example
+ * setLogFields(req, { correlationId, securityContext, responseBytes });
+ */
+export declare function setLogFields(
+  req: IncomingMessage & Record<string, any>,
+  fields: Record<string, unknown>,
+): void;
+
 export interface UserAgentInfo {
   device:  string;
   browser: string;
@@ -239,6 +251,8 @@ export interface TransformContext {
    * Source priority: `getUserRole` option → `req.user.role` → `null`
    */
   userRole: unknown;
+  /** Custom fields from `extraFields` option + `req.logFields` (already sanitized). */
+  extraFields: Record<string, unknown>;
   /** The raw Node.js / Express `Request` object (has `req.user`, etc.) */
   req: IncomingMessage & { user?: { id?: unknown; role?: unknown; [key: string]: unknown } };
   /** The raw Node.js / Express `Response` object */
@@ -288,6 +302,15 @@ export interface OnResponseCompleteOptions extends LogOptions {
    * - `'flat'`: built-in flat record (`HttpFlatLogPayload`) with app headers, route, bodies, timing, UA
    */
   outputFormat?: 'nested' | 'flat';
+  /**
+   * Extra fields merged at the top level of the nested / flat record
+   * (e.g. `correlationId`, `securityContext`). Object or `(req, res) => object`.
+   * Per-request `req.logFields` (see `setLogFields`) override these.
+   * Values are sanitized with the same redaction rules as request bodies.
+   */
+  extraFields?:
+    | Record<string, unknown>
+    | ((req: IncomingMessage & Record<string, any>, res: ServerResponse) => Record<string, unknown> | undefined);
   /**
    * When `outputFormat` is `'flat'`, overrides `process.env.SERVICE_NAME` for the `service` field.
    * Default: `process.env.SERVICE_NAME` or `'APTS'`.

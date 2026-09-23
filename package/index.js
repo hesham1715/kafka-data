@@ -345,6 +345,37 @@ function resolveUserContext(req, options = {}) {
 }
 
 /**
+ * Attaches custom fields (e.g. correlationId, securityContext) to the log
+ * record for this request. Can be called any time before the response ends
+ * (middleware, guard, interceptor, controller); repeated calls are merged.
+ *
+ * @param {import('http').IncomingMessage} req
+ * @param {Record<string, unknown>} fields
+ */
+function setLogFields(req, fields) {
+  if (!req || !fields || typeof fields !== "object") return;
+  req.logFields = { ...(req.logFields || {}), ...fields };
+}
+
+/**
+ * Collects custom fields from `options.extraFields` (object or `(req, res) => object`)
+ * and `req.logFields`. Per-request fields win over option-level ones.
+ * Values are sanitized with the same redaction rules as request bodies.
+ */
+function resolveExtraFields(req, res, options = {}) {
+  let fromOptions = options.extraFields;
+  if (typeof fromOptions === "function") fromOptions = fromOptions(req, res);
+
+  const fromReq = req && req.logFields;
+  const merged = {
+    ...(fromOptions && typeof fromOptions === "object" ? fromOptions : {}),
+    ...(fromReq && typeof fromReq === "object" ? fromReq : {}),
+  };
+  if (Object.keys(merged).length === 0) return {};
+  return sanitizeBody(merged, options) || {};
+}
+
+/**
  * Built-in flat log shape (no consumer `transform` required).
  * Use `outputFormat: 'flat'` in createMiddleware / onResponseComplete options.
  *
@@ -400,7 +431,8 @@ function buildFlatLogPayload(payload, ctx, options = {}) {
  */
 function finalizeLogPayload(payload, req, res, options = {}) {
   const { userId, userRole } = resolveUserContext(req, options);
-  const context = { userId, userRole, req, res };
+  const extraFields = resolveExtraFields(req, res, options);
+  const context = { userId, userRole, extraFields, req, res };
 
   if (typeof options.transform === "function") {
     return options.transform(payload, context);
@@ -408,10 +440,13 @@ function finalizeLogPayload(payload, req, res, options = {}) {
 
   const outputFormat = options.outputFormat ?? "nested";
   if (outputFormat === "flat") {
-    return buildFlatLogPayload(payload, { userId, userRole }, options);
+    return {
+      ...buildFlatLogPayload(payload, { userId, userRole }, options),
+      ...extraFields,
+    };
   }
 
-  return { ...payload, userId, userRole };
+  return { ...payload, userId, userRole, ...extraFields };
 }
 
 function onResponseComplete(req, res, handler, options = {}) {
@@ -621,6 +656,7 @@ module.exports = {
   pickHeaders,
   sanitizeBody,
   parseUserAgent,
+  setLogFields,
   DEFAULT_OPTIONS,
   SENSITIVE_HEADER_NAMES,
   // transports
